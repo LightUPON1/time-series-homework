@@ -43,10 +43,6 @@ log_ave_volumn_ts <- ts(data_diff[, c("log_ave_diff", "log_volumn")], start = c(
 # 查看新构造的时间序列
 plot.ts(log_ave_volumn_ts)
 
-# 协整检验
-johansen_test <- ca.jo(log_ave_volumn_ts, type = "trace", ecdet = "const", K = 2)
-summary(johansen_test)
-
 #格兰杰因果检验
 granger_test_1 <- grangertest(log_ave_diff ~ log_volumn, order = 1, data = data_diff)
 granger_test_2 <- grangertest(log_volumn ~ log_ave_diff, order = 1, data = data_diff)
