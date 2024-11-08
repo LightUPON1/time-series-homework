@@ -9,8 +9,9 @@ library(urca)
 library(lmtest)    
 library(vars)      
 library(dynlm)      
-library(reshape2)  
+library(reshape2)
 
+# 读取数据
 file_path <- "D:/桌面/黄金期货历史数据2.csv"  
 data <- read_csv(file_path)
 
@@ -29,76 +30,60 @@ data <- data %>%
 log_ave_ts <- ts(data$log_ave, frequency = 365)
 log_volumn_ts <- ts(data$log_volumn, frequency = 365)
 
-# 对 log_ave_ts 进行一阶差分
-d_log_ave_ts <- diff(log_ave_ts)
+# 计算一阶差分
+d_log_ave <- diff(data$log_ave)
+d_log_volumn <- diff(data$log_volumn)
 
-# 协整检验
-data_levels <- data.frame(log_ave = data$log_ave, log_volumn = data$log_volumn)
-data_levels <- na.omit(data_levels)
-data_levels_ts <- ts(data_levels, frequency = 365)
-
-# 使用 Johansen 协整检验
-johansen_test <- ca.jo(data_levels_ts, type = "trace", ecdet = "const", K = 2)
-summary(johansen_test)
-
-# 提取协整关系并构建 ECM 模型
-vecm <- cajorls(johansen_test, r = 1)
-summary(vecm$rlm)
-
-# 计算误差修正项（ECT）
-beta <- johansen_test@V[,1]
-beta_normalized <- beta / beta[1]
-ect <- data$log_ave + beta_normalized[2] * data$log_volumn
-
-# 构建 ECM 模型
-ecm_data <- data.frame(
-  d_log_ave = diff(data$log_ave),
-  d_log_volumn = diff(data$log_volumn),
-  ect_lag = lag(ect, 1)[-1]  # 使用正数的滞后，滞后一期，并去除 NA
+var_data <- data.frame(
+  d_log_ave = d_log_ave,
+  d_log_volumn = d_log_volumn,
+  log_volumn = data$log_volumn[-1] 
 )
 
-ecm_data <- na.omit(ecm_data)
+var_data <- na.omit(var_data)
 
-print("ECM 数据长度：")
-print(nrow(ecm_data))
+var_data_ts <- ts(var_data[, c("d_log_ave", "d_log_volumn")])
 
-# 训练 ECM 模型
-ecm_model <- lm(d_log_ave ~ ect_lag + d_log_volumn, data = ecm_data)
-summary(ecm_model)
+exogen_data <- as.matrix(var_data$log_volumn)
+
+# 选择 VAR 模型的滞后阶数，包含外生变量
+lag_selection <- VARselect(var_data_ts, lag.max = 10, type = "const", exogen = exogen_data)
+print(lag_selection$selection)
+
+selected_lag <- lag_selection$selection["AIC(n)"]
+var_model <- VAR(var_data_ts, p = selected_lag, type = "const", exogen = exogen_data)
+
+summary(var_model)
 
 # 预测未来20天
-future_volumn <- rep(tail(data$log_volumn, 1), 20)
-future_d_log_volumn <- rep(0, 20)  # 假设未来 volumn 变化为 0
-future_ect <- tail(ect, 1)
+future_exogen_data <- matrix(rep(tail(var_data$log_volumn, 1), 20), ncol = 1)
 
-forecast_ecm_data <- data.frame(
-  d_log_volumn = future_d_log_volumn,
-  ect_lag = rep(future_ect, 20)
-)
+# 进行预测
+var_forecast <- predict(var_model, n.ahead = 20, dumvar = future_exogen_data)
 
-# 预测差分值
-forecast_d_log_ave_ecm <- predict(ecm_model, newdata = forecast_ecm_data)
+forecast_d_log_ave_var <- var_forecast$fcst$d_log_ave[, "fcst"]
 
+# 转换为水平预测
 last_log_ave <- tail(data$log_ave, 1)
-forecast_log_ave_ecm <- cumsum(c(last_log_ave, forecast_d_log_ave_ecm))
-forecast_log_ave_ecm <- forecast_log_ave_ecm[-1]
+forecast_log_ave_var <- cumsum(c(last_log_ave, forecast_d_log_ave_var))
+forecast_log_ave_var <- forecast_log_ave_var[-1]  # 移除初始值
 
+# 创建未来日期
 future_dates <- seq(from = max(data$date) + 1, by = 1, length.out = 20)
 
 # 绘制预测结果
 plot(
   x = c(data$date, future_dates),
-  y = c(data$log_ave, forecast_log_ave_ecm),
+  y = c(data$log_ave, forecast_log_ave_var),
   type = "l", col = "blue", lwd = 2,
   ylab = "log_ave", xlab = "日期",
-  main = "ECM 模型预测未来20天的黄金基金价格（对数）"
+  main = "带外生变量的 VAR 模型预测未来20天的黄金基金价格（对数）"
 )
 abline(v = max(data$date), col = "red", lty = 2)
 legend("topright", legend = c("历史数据", "预测数据"), col = c("blue", "blue"), lwd = 2)
 
-
 # 构建 ARIMAX 模型
-train_d_log_ave_ts <- d_log_ave_ts  # 使用所有差分后的 log_ave
+train_d_log_ave_ts <- d_log_ave  # 使用所有差分后的 log_ave
 train_xreg <- as.matrix(data$log_volumn[-1])  # 除去第一个元素，因为差分后少一个数据点
 
 arimax_model <- auto.arima(
@@ -134,8 +119,7 @@ plot(
 abline(v = max(data$date), col = "red", lty = 2)
 legend("topright", legend = c("历史数据", "预测数据"), col = c("blue", "blue"), lwd = 2)
 
-
-#干预分析
+# 干预分析
 # 定义干预事件及其日期
 intervention_events <- data.frame(
   event = c("Obama Inauguration", "Fed QE3 Announcement", "Ukraine Crisis Escalation"),
@@ -217,11 +201,11 @@ plot(
 abline(v = max(data$date), col = "red", lty = 2)
 legend("topright", legend = c("历史数据", "预测数据"), col = c("blue", "blue"), lwd = 2)
 
-#预测结果比较
+# 预测结果比较
 
 forecast_data <- data.frame(
   date = future_dates,
-  ECM预测 = forecast_log_ave_ecm,
+  VAR预测 = forecast_log_ave_var,
   ARIMAX预测 = predicted_log_ave_arimax,
   ARIMAX含干预预测 = predicted_log_ave_arimax_interv
 )
